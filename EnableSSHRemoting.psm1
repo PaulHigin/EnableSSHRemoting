@@ -123,9 +123,22 @@ class SSHServerInfo
         }
         else
         {
-            $sshResults = systemctl status ssh
-            $status = $sshResults | ? { $_ -like '*Active: active (running)*' }
-            $this.isServiceRunning = ($status -ne $null)
+            if ((Get-Command service 2>$null) -ne $null)
+            {
+                $sshResults = service ssh status
+                $status = $sshResults | ? { $_ -like '*start/running*' }
+                $this.isServiceRunning = ($status -ne $null)
+            }
+            elseif ((Get-Command systemctl 2>$null) -ne $null)
+            {
+                $sshResults = systemctl status ssh
+                $status = $sshResults | ? { $_ -like '*Active: active (running)*' }
+                $this.isServiceRunning = ($status -ne $null)
+            }
+            else
+            {
+                Write-Error "Unable to get SSHD service status, neither 'service' or 'systemctl' commands are available"
+            }
         }
     }
 
@@ -137,7 +150,18 @@ class SSHServerInfo
         }
         else
         {
-            systemctl restart ssh
+            if ((Get-Command service 2>$null) -ne $null)
+            {
+                service ssh restart
+            }
+            elseif ((Get-Command systemctl 2>$null) -ne $null)
+            {
+                systemctl restart ssh
+            }
+            else
+            {
+                Write-Error "Unable to restart SSHD service, neither 'service' or 'systemctl' commands are available"
+            }
         }
     }
 }
