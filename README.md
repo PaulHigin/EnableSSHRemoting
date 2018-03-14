@@ -24,4 +24,6 @@ The current status of this module is "alpha". It has only been tested on Windows
 
 Also if no PowerShell 6.0, SSH, or SSHD is found then an error is thrown asking the user to find and install it. It would be much better if the needed package was downloaded and installed automatically. Also it would be nice if this was turned into a C# module rather than a script module.  
 
+When running on Linux platforms, make sure you are running PowerShell under sudo so that the cmdlet has privileges to update the sshd_config configuration file and restart the SSHD service.
+
 I hope that others will take this at its current state and bring to a 1.0 release level.  
