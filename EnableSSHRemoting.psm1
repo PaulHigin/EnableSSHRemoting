@@ -1,5 +1,8 @@
-﻿##
-## Enable-SSHRemoting Prototype
+﻿# Copyright (c) Microsoft Corporation. All rights reserved.
+# Licensed under the MIT License.
+
+##
+## Enable-SSHRemoting Cmdlet
 ##
 
 class PlatformInfo
@@ -69,124 +72,28 @@ function DetectPlatform
     }
 }
 
-class SSHClientInfo
+class SSHSubSystemEntry
 {
-    [bool] $exists = $false
-    [string] $cmdName = ""
-    [string] $installPath = ""
-
-    SSHClientInfo()
-    {
-        [System.Management.Automation.CommandInfo] $cmdInfo = Get-Command ssh 2>$null
-        if ($cmdInfo -ne $null)
-        {
-            $this.exists = $true
-            $this.installPath = [System.IO.Path]::GetDirectoryName($cmdInfo.Path)
-            $this.cmdName = [System.IO.Path]::GetFileName($cmdInfo.Path)
-        }
-    }
-}
-
-class SSHServerInfo
-{
-    [PlatformInfo] $platformInfo
-    [bool] $exists = $false
-    [bool] $isServiceRunning = $false
-    [string] $cmdName = ""
-    [string] $installPath = ""
-
-    SSHServerInfo(
-        [PlatformInfo] $platInfo)
-    {
-        $this.platformInfo = $platInfo
-
-        [System.Management.Automation.CommandInfo] $cmdInfo = Get-Command sshd 2> $null
-        if ($cmdInfo -ne $null)
-        {
-            $this.exists = $true
-            $this.installPath = [System.IO.Path]::GetDirectoryName($cmdInfo.Path)
-            $this.cmdName = [System.IO.Path]::GetFileName($cmdInfo.Path)
-        }
-        else
-        {
-            return
-        }
-
-        # Is service running
-        if ($this.platformInfo.isWindows)
-        {
-            $service = Get-Service sshd 2>$null
-            if ($service -ne $null)
-            {
-                $this.isServiceRunning = ($service.Status -match "Running")
-            }
-        }
-        else
-        {
-            if ((Get-Command service 2>$null) -ne $null)
-            {
-                $sshResults = service ssh status
-                $status = $sshResults | ? { $_ -like '*start/running*' }
-                $this.isServiceRunning = ($status -ne $null)
-            }
-            elseif ((Get-Command systemctl 2>$null) -ne $null)
-            {
-                $sshResults = systemctl status ssh
-                $status = $sshResults | ? { $_ -like '*Active: active (running)*' }
-                $this.isServiceRunning = ($status -ne $null)
-            }
-            else
-            {
-                Write-Error "Unable to get SSHD service status, neither 'service' or 'systemctl' commands are available"
-            }
-        }
-    }
-
-    RestartService()
-    {
-        if ($this.platformInfo.isWindows)
-        {
-            Restart-Service sshd
-        }
-        else
-        {
-            if ((Get-Command service 2>$null) -ne $null)
-            {
-                service ssh restart
-            }
-            elseif ((Get-Command systemctl 2>$null) -ne $null)
-            {
-                systemctl restart ssh
-            }
-            else
-            {
-                Write-Error "Unable to restart SSHD service, neither 'service' or 'systemctl' commands are available"
-            }
-        }
-    }
+    [string] $subSystemLine
+    [string] $subSystemName
+    [string] $subSystemCommand
+    [string[]] $subSystemCommandArgs
 }
 
 class SSHRemotingConfig
 {
     [PlatformInfo] $platformInfo
-    [string] $psSubSystemPath = ""
-    [string[]] $psSubSystemArgs = @()
-    [string] $configFilePath = ""
-    [bool] $configFileExists
-    [bool] $pubkeyAuthentication
-    [bool] $passwordAuth = $true
-    [int] $psSubsystemCount = 0
+    [SSHSubSystemEntry[]] $psSubSystemEntries = @()
+    [string] $configFilePath
     $configComponents = @()
 
     SSHRemotingConfig(
-        [PlatformInfo] $platInfo)
+        [PlatformInfo] $platInfo,
+        [string] $configFilePath)
     {
         $this.platformInfo = $platInfo
-        $sshServerInfo = [SSHServerInfo]::new($this.platformInfo)
-        if ($sshServerInfo.exists)
-        {
-            $this.ParseSSHRemotingConfig($sshServerInfo)
-        }
+        $this.configFilePath = $configFilePath
+        $this.ParseSSHRemotingConfig()
     }
 
     [string[]] SplitConfigLine([string] $line)
@@ -206,37 +113,8 @@ class SSHRemotingConfig
         return $rtnStrArray.ToArray()
     }
 
-    ParseSSHRemotingConfig(
-        [SSHServerInfo] $sshdInfo)
+    ParseSSHRemotingConfig()
     {
-        if (! $sshdInfo.exists)
-        {
-            Write-Error "Cannot parse the sshd_config file because the ssh server installation does not exist"
-            return
-        }
-
-        if ($sshdInfo.platformInfo.isWindows)
-        {
-            $this.configFilePath = Join-Path $sshdInfo.installPath "sshd_config"
-        }
-        elseif ($sshdInfo.platformInfo.isLinux)
-        {
-            $this.configFilePath = Join-Path "/etc/ssh" "sshd_config"
-        }
-        else
-        {
-            Write-Error "Unsupported platform"
-            return
-        }
-
-        $this.configFileExists = Test-Path $this.configFilePath
-
-        if (! $this.configFileExists)
-        {
-            Write-Warning "Cannot find the sshd_config file in the ssh server installation path: $($this.configFilePath)"
-            return
-        }
-
         [string[]] $contents = Get-Content -Path $this.configFilePath
         foreach ($line in $contents)
         {
@@ -245,144 +123,84 @@ class SSHRemotingConfig
 
             if (($components[0] -eq "Subsystem") -and ($components[1] -eq "powershell"))
             {
-                $this.psSubsystemCount++
-                $this.psSubSystemPath = $components[2]
+                $entry = [SSHSubSystemEntry]::New()
+                $entry.subSystemLine = $line
+                $entry.subSystemName = $components[1]
+                $entry.subSystemCommand = $components[2]
+                $entry.subSystemCommandArgs = @()
                 for ($i=3; $i -lt $components.Count; $i++)
                 {
-                    $this.psSubSystemArgs += $components[$i]
+                    $entry.subSystemCommandArgs += $components[$i]
                 }
-            }
-            elseif ($components[0] -eq "PasswordAuthentication")
-            {
-                $this.passwordAuth = ($components[1] -eq "yes")
-            }
-            elseif ($components[0] -eq "PubkeyAuthentication")
-            {
-                $this.pubkeyAuthentication = ($components[1] -eq "yes")
+
+                $this.psSubSystemEntries += $entry
             }
         }
     }
+}
 
-    UpdateConfig(
-        [string]    $powerShellPath,
-        [hashtable] $allowPasswordAuth,
-        [hashtable] $allowPublicKeyAuth,
-        [bool]      $backupConfigFile)
+function UpdateConfiguration
+{
+    param (
+        [SSHRemotingConfig] $config,
+        [string] $PowerShellPath
+    )
+
+    #
+    # Update and re-write config file with existing settings plus new PowerShell remoting settings
+    #
+
+    # Subsystem
+    [System.Collections.Generic.List[string]] $newContents = [System.Collections.Generic.List[string]]::new()
+    $psSubSystemEntry = "Subsystem       powershell      {0} {1} {2} {3}" -f $powerShellPath, "-SSHS", "-NoProfile", "-NoLogo"
+    $subSystemAdded = $false
+
+    foreach ($lineItem in $config.configComponents)
     {
-        #
-        # Update and re-write config file with existing settings plus new PowerShell remoting settings
-        #
+        $line = $lineItem.Line
+        $components = $lineItem.Components
 
-        # Subsystem
-        [System.Collections.Generic.List[string]] $newContents = [System.Collections.Generic.List[string]]::new()
-        $psSubSystemEntry = "Subsystem       powershell {0} {1} {2} {3}" -f $powerShellPath, "-SSHS", "-NoProfile", "-NoLogo"
-        $subSystemAdded = $false
-
-        # Password Auth
-        if ($allowPasswordAuth.Message -ne "Use existing")
+        if ($components[0] -eq "SubSystem")
         {
-            $passAuthEntry = "PasswordAuthentication {0}" -f $(if ($allowPasswordAuth.Allow) { "yes" } else { "no" })
-            $addPassAuthEntry = $true
+            if (! $subSystemAdded)
+            {
+                # Add new powershell subsystem entry
+                $newContents.Add($psSubSystemEntry)
+                $subSystemAdded = $true
+            }
+
+            if ($components[1] -eq "powershell")
+            {
+                # Remove all existing powershell subsystem entries
+                continue
+            }
+
+            # Include existing subsystem entries.
+            $newContents.Add($line)
         }
         else
         {
-            $addPassAuthEntry = $false
-            $passAuthEntry = ""
+            # Include all other configuration lines
+            $newContents.Add($line)
         }
-
-        # PublicKey Auth
-        if ($allowPublicKeyAuth.Message -ne "Use existing")
-        {
-            $pubkeyEntry = "PubKeyAuthentication {0}" -f $(if ($allowPublicKeyAuth.Allow) { "yes" } else { "no" })
-            $addPubKeyAuth = $true
-        }
-        else
-        {
-            $pubkeyEntry = ""
-            $addPubKeyAuth = $false
-        }
-
-        foreach ($lineItem in $this.configComponents)
-        {
-            $line = $lineItem.Line
-            $components = $lineItem.Components
-
-            if ($components[0] -eq "SubSystem")
-            {
-                if (! $subSystemAdded)
-                {
-                    # Add new powershell subsystem entry
-                    $newContents.Add($psSubSystemEntry)
-                    $subSystemAdded = $true
-                }
-
-                if ($components[1] -eq "powershell")
-                {
-                    # Remove all existing powershell subsystem entries
-                    continue
-                }
-
-                # Include existing subsystem entries.
-                $newContents.Add($line)
-            }
-            elseif ($components[0] -match "PasswordAuthentication")
-            {
-                if ($addPassAuthEntry)
-                {
-                    # Replace existing entry
-                    $addPassAuthEntry = $false
-                    $newContents.Add($passAuthEntry)
-                }
-                else
-                {
-                    $newContents.Add($line)
-                }
-            }
-            elseif ($components[0] -match "PubkeyAuthentication")
-            {
-                if ($addPubKeyAuth)
-                {
-                    # Replace existing entry
-                    $addPubKeyAuth = $false
-                    $newContents.Add($pubkeyEntry)
-                }
-                else
-                {
-                    $newContents.Add($line)
-                }
-            }
-            else
-            {
-                # Include all other configuration lines
-                $newContents.Add($line)
-            }
-        }
-
-        if (! $subSystemAdded)
-        {
-            $newContents.Add($psSubSystemEntry)
-        }
-
-        if ($addPassAuthEntry)
-        {
-            $newContents.Add($passAuthEntry)
-        }
-
-        if ($addPubKeyAuth)
-        {
-            $newContents.Add($pubkeyEntry)
-        }
-
-        if ($backupConfigFile)
-        {
-            # Copy existing file to a backup version
-            $uniqueName = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetRandomFileName())
-            $backupFilePath = $this.configFilePath + "_backup_" + $uniqueName
-            Copy-Item -Path $this.configFilePath -Destination $backupFilePath
-        }
-
-        Set-Content -Path $this.configFilePath -Value $newContents.ToArray()
     }
+
+    if (! $subSystemAdded)
+    {
+        $newContents.Add($psSubSystemEntry)
+    }
+
+    # Copy existing file to a backup version
+    $uniqueName = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetRandomFileName())
+    $backupFilePath = $config.configFilePath + "_backup_" + $uniqueName
+    Copy-Item -Path $config.configFilePath -Destination $backupFilePath
+    if ($?)
+    {
+        WriteLine "A backup copy of the old sshd_config configuration file has been created at:"
+        WriteLine $backupFilePath
+    }
+
+    Set-Content -Path $config.configFilePath -Value $newContents.ToArray() -ErrorAction Stop
 }
 
 function CheckPowerShellVersion
@@ -418,154 +236,234 @@ function CheckPowerShellVersion
     }
 }
 
+function WriteLine
+{
+    param (
+        [string] $Message,
+        [int] $PrependLines = 0,
+        [int] $AppendLines = 0
+    )
 
-##
-## Enable-SSHRemoting
-##
+    for ($i=0; $i -lt $PrependLines; $i++)
+    {
+        Write-Output ""
+    }
+
+    Write-Output $Message
+
+    for ($i=0; $i -lt $AppendLines; $i++)
+    {
+        Write-Output ""
+    }
+}
+
+# Windows only GetShortPathName PInvoke
+$typeDef = @'
+    using System;
+    using System.Runtime.InteropServices;
+    using System.Text;
+
+    namespace NativeUtils
+    {
+        public class Path
+        {
+            [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+            private static extern int GetShortPathName(
+                [MarshalAs(UnmanagedType.LPTStr)]
+                string path,
+                [MarshalAs(UnmanagedType.LPTStr)]
+                StringBuilder shortPath,
+                int shortPathLength);
+
+            public static string ConvertToShortPath(
+                string longPath)
+            {
+                int shortPathLength = 2048;
+                StringBuilder shortPath = new StringBuilder(shortPathLength);
+                GetShortPathName(
+                    path: longPath,
+                    shortPath: shortPath,
+                    shortPathLength: shortPathLength);
+    
+                return shortPath.ToString();
+            }
+        }
+    }
+'@
+
+<#
+.Synopsis
+    Enables PowerShell SSH remoting endpoint on local system
+.Description
+    This cmdlet will set up an SSH based remoting endpoint on the local system, based on
+    the PowerShell executable file path passed in. Or if no PowerShell file path is provided then 
+    the currently running PowerShell file path is used.
+    The end point is enabled by adding a 'powershell' subsystem entry to the SSHD configuration, using
+    the provided or current PowerShell file path.
+    Both the SSH client and SSHD server components are detected and if not found a terminating
+    error is emitted, asking the user to install the components.
+    Then the sshd_config is parsed, and if a new 'powershell' subsystem entry is added.
+.Parameter SSHDConfigFilePath
+    File path to the SSHD service configuration file. This file will be updated to include a
+    'powershell' subsystem entry to define a PowerShell SSH remoting endpoint, so current credentials
+    must have write access to the file.
+.Parameter PowerShellFilePath
+    Specifies the file path to the PowerShell command used to host the SSH remoting PowerShell
+    endpoint. If no value is specified then the currently running PowerShell executable path is used
+    in the subsytem command.
+.Parameter Force
+    When true, this cmdlet will update the sshd_config configuration file without prompting.
+#>
 function Enable-SSHRemoting
 {
     [CmdletBinding()]
     param (
+        [string] $SSHDConfigFilePath,
+
         [string] $PowerShellFilePath,
-        [switch] $AllowPasswordAuthentication,
-        [switch] $AllowPublicKeyAuthentication,
-        [switch] $BackupConfigFile,
+
         [switch] $Force
     )
-
-    if (! [string]::IsNullOrEmpty($PowerShellFilePath))
-    {
-        if (! (Test-Path $PowerShellFilePath))
-        {
-            throw "The provided PowerShell file path is invalid: $PowerShellFilePath"
-        }
-
-        if (! (CheckPowerShellVersion $PowerShellFilePath))
-        {
-            throw "The provided PowerShell file path is an unsupported version of PowerShell.  PowerShell version 6.0 or greater is required."
-        }
-    }
-    else
-    {
-        Write-Warning "No PowerShellFilePath parameter argument was provided."
-        Write-Warning "Checking the current pwsh.exe returned from Get-Command"
-
-        # Try built-in version
-        $PowerShellFilePath = Get-Command -Name pwsh 2>$null | % Source
-        if (! $PowerShellFilePath -or ! (CheckPowerShellVersion $PowerShellFilePath))
-        {
-            throw "Unable to find a useable PowerShell (pwsh.exe) version for SSH remoting endpoint. SSH remoting is only supported for PowerShell version 6.0 and higher."
-        }
-
-        Write-Warning "Using PowerShell at this path for SSH remoting endpoint:"
-        Write-Warning "$PowerShellFilePath"
-    }
-
-    Write-Verbose ""
-    Write-Verbose "##############################################"
-    Write-Verbose "Selected PowerShell for SSH remoting endpoint:"
-    Write-Verbose "$PowerShellFilePath"
-    Write-Verbose "##############################################"
-    Write-Verbose ""
 
     # Detect platform
     $platformInfo = [PlatformInfo]::new()
     DetectPlatform $platformInfo
     Write-Verbose "Platform information"
     Write-Verbose "$($platformInfo | Out-String)"
-    Write-Verbose ""
 
     # Detect SSH client installation
-    $sshClientInfo = [SSHClientInfo]::new()
-    Write-Verbose "Initial SSH client information"
-    Write-Verbose "$($sshClientInfo | Out-String)"
-    Write-Verbose ""
-
-    # Detect SSH server installation
-    $sshServerInfo = [SSHServerInfo]::new($platformInfo)
-    Write-Verbose "Initial SSH server information"
-    Write-Verbose "$($sshServerInfo | Out-String)"
-    Write-Verbose ""
-
-    # Install SSH as needed
-    if (! $sshClientInfo.exists)
+    if (! (Get-Command -Name ssh -ErrorAction SilentlyContinue))
     {
-        # TODO: Automate downloading and installing SSH client
-        throw "SSH client does not exist on this machine.  Find and install SSH for this platform before continuing."
+        Write-Warning "SSH client is not installed or not discoverable on this machine. SSH client must be installed before PowerShell SSH based remoting can be enabled."
     }
-    if (! $sshServerInfo.exists)
+
+    # Non-Windows platforms must run this cmdlet as 'root'
+    if (!$platformInfo.isWindows)
     {
-        # TODO: Automate downloading and installing SSHD server
-        throw "SSHD server component does not exist on this machine.  Find and install SSHD for this platform before continuing."
+        $user = whoami
+        if ($user -ne 'root')
+        {
+            throw "This cmdlet can only be run as root. Start PowerShell (pwsh) using the 'sudo' command before running this cmdlet."
+        }
     }
 
-    # Configure SSH server as needed
-    $sshdConfig = [SSHRemotingConfig]::new($platformInfo)
-
-    # Report SSHD server settings
-    if (! $sshdConfig.configFileExists)
+    # Detect SSHD server installation
+    $SSHDFound = $false
+    if ($platformInfo.IsWindows)
     {
-        Write-Output ""
-        Write-Warning "Unable to find the sshd_config configuration file needed to configure SSH PowerShell remoting."
-        Write-Warning "The configuration file is expected to be at this location: $($sshdConfig.configFilePath)."
-        throw "Missing sshd_config file. PowerShell SSH endpoint configuration cannot proceed."
+        $SSHDFound = $null -ne (Get-Service -Name sshd -ErrorAction SilentlyContinue)
     }
-
-    Write-Verbose ""
-    Write-Verbose "###############################"
-    Write-Verbose "Current SSH server settings"
-    Write-Verbose "###############################"
-
-    Write-Verbose ""
-    Write-Verbose "Configuration File Location:"
-    Write-Verbose "$($sshdConfig.configFilePath)"
-
-    Write-Verbose ""
-    Write-Verbose "Password Authentication Enabled: $(if ($sshdConfig.passwordAuth) { "Yes" } else { "No" })"
-
-    Write-Verbose ""
-    Write-Verbose "Public Key Authentication Enabled: $(if ($sshdConfig.pubkeyAuthentication) { "Yes" } else { "No" })"
-
-    if ($sshdConfig.psSubsystemCount -gt 1)
+    elseif ($platformInfo.IsLinux)
     {
-        Write-Output ""
-        Write-Verbose "PowerShell Subsystem:"
-        Write-Verbose "$($sshdConfig.psSubSystemPath)"
-        Write-Verbose ""
-        Write-Warning "One or more PowerShell remoting subsystems were found in the SSHD configuration file."
-        Write-Warning "These endpoint subsystem entries will be replaced with the currently chosen PowerShell version."
+        $sshdStatus = systemctl status sshd
+        $SSHDFound = $null -ne $sshdStatus
     }
-
-    $hPasswordAuth = @{
-        Allow = $false;
-        Message = "Use existing"
-    }
-    if ($PSCmdlet.MyInvocation.BoundParameters.ContainsKey("AllowPasswordAuthentication"))
+    else
     {
-        $hPasswordAuth.Allow = $AllowPasswordAuthentication
-        $hPasswordAuth.Message = "$(if ($AllowPasswordAuthentication) { "Yes" } else { "No" })"
+        # macOS
+        $SSHDFound = ((launchctl list | Select-String 'com.openssh.sshd') -ne $null)
     }
-
-    $hPubKeyAuth = @{
-        Allow = $false;
-        Message = "Use existing"
-    }
-    if ($PSCmdlet.MyInvocation.BoundParameters.ContainsKey("AllowPublicKeyAuthentication"))
+    if (! $SSHDFound)
     {
-        $hPubKeyAuth.Allow = $AllowPublicKeyAuthentication
-        $hPubKeyAuth.Message = "$(if ($AllowPublicKeyAuthentication) { "Yes" } else { "No" })"
+        Write-Warning "SSHD service is not found on this machine. SSHD service must be installed and running before PowerShell SSH based remoting can be enabled."
     }
 
-    Write-Output ""
-    Write-Output "###############################"
-    Write-Output "Configuring SSH server settings"
-    Write-Output "###############################"
-    Write-Output "SSHD configuration file path: $($sshdConfig.configFilePath)"
-    Write-Output "PowerShell endpoint file path: $PowerShellFilePath"
-    Write-Output "Password Authentication: $($hPasswordAuth.Message)"
-    Write-Output "User Public Key Authentication: $($hPubKeyAuth.Message)"
-    Write-Output "Back up configuration file: $(if ($BackupConfigFile) { "Yes" } else { "No" })"
-    Write-Output "Force sshd service configuration update: $(if ($Force) { "Yes" } else { "No" })"
+    # Validate a SSHD configuration file path
+    if ([string]::IsNullOrEmpty($SSHDConfigFilePath))
+    {
+        Write-Warning "-SSHDConfigFilePath not provided. Using default configuration file location."
+
+        if ($platformInfo.IsWindows)
+        {
+            $SSHDConfigFilePath = Join-Path -Path $env:ProgramData -ChildPath 'ssh' -AdditionalChildPath 'sshd_config'
+        }
+        elseif ($platformInfo.isLinux)
+        {
+            $SSHDConfigFilePath = '/etc/ssh/sshd_config'
+        }
+        else
+        {
+            # macOS
+            $SSHDConfigFilePath = '/private/etc/ssh/sshd_config'
+        }
+    }
+
+    # Validate a PowerShell command to use for endpoint
+    $PowerShellToUse = $PowerShellFilePath
+    if (! [string]::IsNullOrEmpty($PowerShellToUse))
+    {
+        WriteLine "Validating provided -PowerShellFilePath argument." -AppendLines 1 -PrependLines 1
+
+        if (! (Test-Path $PowerShellToUse))
+        {
+            throw "The provided PowerShell file path is invalid: $PowerShellToUse"
+        }
+
+        if (! (CheckPowerShellVersion $PowerShellToUse))
+        {
+            throw "The provided PowerShell file path is an unsupported version of PowerShell.  PowerShell version 6.0 or greater is required."
+        }
+    }
+    else
+    {
+        WriteLine "Validating current PowerShell to use as endpoint subsystem." -AppendLines 1
+
+        # Try currently running PowerShell
+        $PowerShellToUse = Get-Command -Name "$PSHome/pwsh" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+        if (! $PowerShellToUse -or ! (CheckPowerShellVersion $PowerShellToUse))
+        {
+            throw "Current running PowerShell version is not valid for SSH remoting endpoint. SSH remoting is only supported for PowerShell version 6.0 and higher. Specify a valid PowerShell 6.0+ file path with the -PowerShellFilePath parameter."
+        }
+    }
+
+    # SSHD configuration file uses the space character as a delimiter.
+    # Consequently, the configuration Subsystem entry will not allow argument paths containing space characters.
+    # For Windows platforms, we can a short cut path.
+    # But for non-Windows platforms, we currently throw an error.
+    #   One possible solution is to crete a symbolic link
+    #   New-Item -ItemType SymbolicLink -Path <NewNoSpacesPath> -Value $<PathwithSpaces>
+    if ($PowerShellToUse.Contains(' '))
+    {
+        if ($platformInfo.IsWindows)
+        {
+            Add-Type -TypeDefinition $typeDef
+            $PowerShellToUse = [NativeUtils.Path]::ConvertToShortPath($PowerShellToUse)
+            if (! (Test-Path -Path $PowerShellToUse))
+            {
+                throw "Converting long Windows file path resulted in an invalid path: ${PowerShellToUse}."
+            }
+        }
+        else 
+        {
+            throw "The PowerShell executable (pwsh) selected for hosting the remoting endpoint has a file path containing space characters, which cannot be used with SSHD configuration."
+        }
+    }
+
+    WriteLine "Using PowerShell at this path for SSH remoting endpoint:"
+    WriteLine "$PowerShellToUse" -AppendLines 1
+
+    # Validate the SSHD configuration file path
+    if (! (Test-Path -Path $SSHDConfigFilePath))
+    {
+        throw "The provided SSHDConfigFilePath parameter, $SSHDConfigFilePath, is not a valid path."
+    }
+    WriteLine "Modifying SSHD configuration file at this location:"
+    WriteLine "$SSHDConfigFilePath" -AppendLines 1
+
+    # Get the SSHD configurtion
+    $sshdConfig = [SSHRemotingConfig]::new($platformInfo, $SSHDConfigFilePath)
+
+    if ($sshdConfig.psSubSystemEntries.Count -gt 0)
+    {
+        WriteLine "The following PowerShell subsystems were found in the sshd_config file:"
+        foreach ($entry in $sshdConfig.psSubSystemEntries)
+        {
+            WriteLine $entry.subSystemLine
+        }
+        Writeline "Continuing will overwrite any existing PowerShell subsystem entries with the new subsystem." -PrependLines 1
+        WriteLine "The new SSH remoting endpoint will use this PowerShell executable path:"
+        WriteLine "$PowerShellToUse" -AppendLines 1
+    }
 
     $shouldContinue = $Force
     if (! $shouldContinue)
@@ -575,22 +473,12 @@ function Enable-SSHRemoting
 
     if ($shouldContinue)
     {
-        Write-Output ""
-        Write-Output "Updating configuration file"
-        $sshdConfig.UpdateConfig(
-            $PowerShellFilePath,
-            $hPasswordAuth,
-            $hPubKeyAuth,
-            $BackupConfigFile)
+        WriteLine "Updating configuration file ..." -PrependLines 1 -AppendLines 1
 
-        Write-Output ""
-        Write-Output "Restarting SSHD service"
-        $sshServerInfo.RestartService()
+        UpdateConfiguration $sshdConfig $PowerShellToUse
+
+        WriteLine "The configuration file has been updated:" -PrependLines 1
+        WriteLine $sshdConfig.configFilePath -AppendLines 1
+        WriteLine "You must restart the SSHD service for the changes to take effect." -AppendLines 1
     }
-}
-
-function Test-SSHRemoting
-{
-    # TODO: Implement
-    throw [System.Management.Automation.PSNotImplementedException]::new("This has not yet been implemented")
 }
