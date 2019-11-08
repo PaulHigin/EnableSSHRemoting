@@ -1,29 +1,29 @@
 # EnableSSHRemoting
-Module for cmdlets that enable and test PowerShell 6.0+ SSH based remoting  
 
-This module is the beginning of work to enable and test SSH based remoting on all PowerShell 6.0 supported platforms, which currently include Windows, Linux, and MacOS.  
+PowerShell SSH remoting was implemented in PowerShell 6.0 but requries SSH (client) and SSHD (service) components to be installed.
+In addition the sshd_config configuration file must be updated to define a PowerShell endpoint as a subsystem.
+Once this is done PowerShell remoting cmdlets can be used to establish a PowerShell remoting session over SSH that works across platforms. 
 
-PowerShell SSH remoting was implemented in PowerShell 6.0 but requries SSH (client) and SSHD (service) components to be installed. In addition the sshd_config configuration file must be updated to define a PowerShell endpoint as a subsystem. Once this is done PowerShell remoting cmdlets can be used to establish a PowerShell remoting session over SSH that works across platforms.  
+```powershell
+$session = New-PSSession -HostName LinuxComputer1 -UserName UserA -SSHTransport
+```
 
-$session = New-PSSession -HostName LinuxComputer1 -UserName paulhig -SSHTransport
+There are a number of requirements that must be satisfied for PowerShell SSH based remoting:
 
-The module exports two functions: Enable-SSHRemoting, Test-SSHRemoting.  
+- PowerShell 6.0 or greater must be installed on the system.
+Since multiple PowerShell installations can appear on a single system, a specific installation can be selected.
+- SSH client must be installed on the system as PowerShell uses it for outgoing connections.
+- SSHD (ssh daemon) must be installed on the system for PowerShell to receive SSH connections.
+- SSHD must be configured with a Subsystem that serves as the PowerShell remoting endpoint.
 
-Enable-SSHRemoting:
-This cmdlet does the following:
- - Detects platform
- - Detects PowerShell 6.0 on system (if a pwsh.exe path is not provided)
- - Verifies PowerShell operation and version
- - Detects SSH client on system
- - Detects SSHD service running on system
- - Detects sshd_config file
- - Updates sshd_config file to include PowerShell endpoint subsystem
- - Restarts SSHD service
+This module exports a single cmdlet: Enable-SSHRemoting
 
-The current status of this module is "alpha". It has only been tested on Windows 10 and Linux Ubuntu platforms, so it still needs to be tested other supported platforms. The Test-SSHRemoting cmdlet needs to be implemented.  
+The Enable-SSHRemoting cmdlet will do the following:
 
-Also if no PowerShell 6.0, SSH, or SSHD is found then an error is thrown asking the user to find and install it. It would be much better if the needed package was downloaded and installed automatically. Also it would be nice if this was turned into a C# module rather than a script module.  
+- Detect the underlying platform (Windows, Linux, macOS).
+- Detect an installed SSH client, and emit a warning if not found.
+- Detect an installed SSHD daemon, and emit a warning if not found.
+- Accept a PowerShell (pwsh) path to be run as a remoting PowerShell session endpoint, or try to use the currently running PowerShell.
+- Update the SSHD configuration file to add a PowerShell subsystem endpoint entry.
 
-When running on Linux platforms, make sure you are running PowerShell under sudo so that the cmdlet has privileges to update the sshd_config configuration file and restart the SSHD service.
-
-I hope that others will take this at its current state and bring to a 1.0 release level.  
+If all of the conditions are satisfied then PowerShell SSH remoting will work to and from the local system.
