@@ -325,6 +325,29 @@ function Enable-SSHRemoting
         [switch] $Force
     )
 
+    # Non-Windows platforms must run this cmdlet as 'root'
+    if (!$platformInfo.isWindows)
+    {
+        $user = whoami
+        if ($user -ne 'root')
+        {
+            # Spawn new PowerShell with sudo and exit this session.
+            $modFilePath = (Get-Module -Name EnableSSHRemoting | Select-Object -Property Path).Path
+            $parameters = ""
+            foreach ($key in $PSBoundParameters.Keys)
+            {
+                $parameters += "-${key} "
+                $value = $PSBoundParameters[$key]
+                if ($value -is [string])
+                {
+                    $parameters += "'$value' "
+                }
+            }
+            & sudo "$PSHOME/pwsh" -NoExit -c "Import-Module -Name $modFilePath; Enable-SSHRemoting $parameters"
+            exit
+        }
+    }
+
     # Detect platform
     $platformInfo = [PlatformInfo]::new()
     DetectPlatform $platformInfo
@@ -335,16 +358,6 @@ function Enable-SSHRemoting
     if (! (Get-Command -Name ssh -ErrorAction SilentlyContinue))
     {
         Write-Warning "SSH client is not installed or not discoverable on this machine. SSH client must be installed before PowerShell SSH based remoting can be enabled."
-    }
-
-    # Non-Windows platforms must run this cmdlet as 'root'
-    if (!$platformInfo.isWindows)
-    {
-        $user = whoami
-        if ($user -ne 'root')
-        {
-            throw "This cmdlet can only be run as root. Start PowerShell (pwsh) using the 'sudo' command before running this cmdlet."
-        }
     }
 
     # Detect SSHD server installation
