@@ -331,6 +331,11 @@ function Enable-SSHRemoting
         $user = whoami
         if ($user -ne 'root')
         {
+            if (! $PSCmdlet.ShouldContinue("This cmdlet must be run as 'root'. If you continue, PowerShell will restart under 'root'. Do you wish to continue?", "Enable-SSHRemoting"))
+            {
+                return
+            }
+
             # Spawn new PowerShell with sudo and exit this session.
             $modFilePath = (Get-Module -Name EnableSSHRemoting | Select-Object -Property Path).Path
             $parameters = ""
