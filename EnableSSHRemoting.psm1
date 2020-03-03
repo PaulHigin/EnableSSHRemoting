@@ -325,6 +325,12 @@ function Enable-SSHRemoting
         [switch] $Force
     )
 
+    # Detect platform
+    $platformInfo = [PlatformInfo]::new()
+    DetectPlatform $platformInfo
+    Write-Verbose "Platform information"
+    Write-Verbose "$($platformInfo | Out-String)"
+        
     # Non-Windows platforms must run this cmdlet as 'root'
     if (!$platformInfo.isWindows)
     {
@@ -352,12 +358,6 @@ function Enable-SSHRemoting
             exit
         }
     }
-
-    # Detect platform
-    $platformInfo = [PlatformInfo]::new()
-    DetectPlatform $platformInfo
-    Write-Verbose "Platform information"
-    Write-Verbose "$($platformInfo | Out-String)"
 
     # Detect SSH client installation
     if (! (Get-Command -Name ssh -ErrorAction SilentlyContinue))
