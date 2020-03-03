@@ -361,8 +361,12 @@ function Enable-SSHRemoting
 
     # Detect SSH client installation
     if (! (Get-Command -Name ssh -ErrorAction SilentlyContinue))
-    {
-        Write-Warning "SSH client is not installed or not discoverable on this machine. SSH client must be installed before PowerShell SSH based remoting can be enabled."
+    {   
+        $SSHCFound = $false
+        $SSHCFound = (Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0).Online
+        if (! $SSHCFound) {
+            Write-Warning "SSH client is not installed or not discoverable on this machine. SSH client must be installed before PowerShell SSH based remoting can be enabled."
+        }
     }
 
     # Detect SSHD server installation
@@ -370,6 +374,9 @@ function Enable-SSHRemoting
     if ($platformInfo.IsWindows)
     {
         $SSHDFound = $null -ne (Get-Service -Name sshd -ErrorAction SilentlyContinue)
+        If (! $SSHDFound) {
+            $SSHDFound = (Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0).Online
+        }
     }
     elseif ($platformInfo.IsLinux)
     {
